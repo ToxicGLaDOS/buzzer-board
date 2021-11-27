@@ -25,13 +25,15 @@ enum gameState{BUZZERS_LOCKED, BUZZERS_UNLOCKED, PLAYER_BUZZED};
 enum mode{GAME, EDIT, SCORES};
 
 struct scrollData {
-  int16_t yOffset = 0;
+  int16_t offset = 0;
   int16_t waitTimer = 0;
   const int16_t pauseTime = 50;
   const int16_t scrollSpeed = 1;
+  int16_t scrollMax;
   scrollState state = WAITING;
+  bool inverted = false;
 
-} scrollData;
+} scrollModeData;
 
 struct button {
   buttonState state = RELEASED; // Current button state
@@ -50,6 +52,8 @@ struct editModeData {
 struct gameModeData {
   gameState state = BUZZERS_LOCKED;
   uint16_t activePlayer = 0; // The player who is currently buzzed in
+  bool lockedPlayers[NUM_PLAYERS];
+  scrollData lockedPlayersScrollData;
 } gameModeData;
 
 button whiteBtn;
@@ -69,49 +73,84 @@ void drawString(int16_t x, int16_t y, String text, uint16_t foregroundColor, uin
   }
 }
 
+void updateScrollData(scrollData &scrollData) {
+  switch (scrollData.state){
+    case WAITING:
+      scrollData.waitTimer++;
+      if (scrollData.waitTimer >= scrollData.pauseTime){
+        scrollData.waitTimer = 0;
+        if (scrollData.inverted) {
+          if (scrollData.offset >= 0) {
+            scrollData.state = SCROLLING_DOWN;
+          }
+          else {
+            scrollData.state = SCROLLING_UP;
+          }
+        }
+        else {
+          if (scrollData.offset <= 0) {
+            scrollData.state = SCROLLING_DOWN;
+          }
+          else {
+            scrollData.state = SCROLLING_UP;
+          }
+        }
+      }
+      break;
+    case SCROLLING_DOWN:
+      if (scrollData.inverted) {
+        if(scrollData.offset <= -scrollData.scrollMax) {
+          scrollData.state = WAITING;
+        }
+        else {
+          scrollData.offset -= scrollData.scrollSpeed;
+        }
+      }
+      else {
+        if(scrollData.offset >= scrollData.scrollMax) {
+          scrollData.state = WAITING;
+        }
+        else {
+          scrollData.offset += scrollData.scrollSpeed;
+        }
+      }
+      break;
+    case SCROLLING_UP:
+      if (scrollData.inverted) {
+        if(scrollData.offset >= 0) {
+          scrollData.state = WAITING;
+        }
+        else {
+            scrollData.offset += scrollData.scrollSpeed;
+        }
+      }
+      else {
+        if(scrollData.offset <= 0) {
+          scrollData.state = WAITING;
+        }
+        else {
+            scrollData.offset -= scrollData.scrollSpeed;
+        }
+      }
+
+      break;
+  }
+}
+
 void showScores() {
   char scoreBuffer[15];
   const int16_t scrollMax = CHAR_HEIGHT*(NUM_PLAYERS) - SCREEN_HEIGHT;
-
+  scrollModeData.scrollMax = scrollMax;
 
   drawString(63, 0, "SCORES", MONOOLED_WHITE, MONOOLED_BLACK, 1);
   drawString(63, CHAR_HEIGHT*2, "BL: EXIT", MONOOLED_WHITE, MONOOLED_BLACK, 1);
 
   for (uint16_t i = 0; i < NUM_PLAYERS; i++) {
     sprintf(scoreBuffer, "p%d: %d", i, scores[i]);
-    drawString(0, CHAR_HEIGHT*i - scrollData.yOffset, scoreBuffer, MONOOLED_WHITE, MONOOLED_BLACK, 1);
+    drawString(0, CHAR_HEIGHT*i - scrollModeData.offset, scoreBuffer, MONOOLED_WHITE, MONOOLED_BLACK, 1);
   }
 
-  switch (scrollData.state){
-    case WAITING:
-      scrollData.waitTimer++;
-      if (scrollData.waitTimer >= scrollData.pauseTime){
-        scrollData.waitTimer = 0;
-        if (scrollData.yOffset <= 0) {
-          scrollData.state = SCROLLING_DOWN;
-        }
-        else {
-          scrollData.state = SCROLLING_UP;
-        }
-      }
-      break;
-    case SCROLLING_DOWN:
-      if(scrollData.yOffset >= scrollMax) {
-        scrollData.state = WAITING;
-      }
-      else {
-        scrollData.yOffset += scrollData.scrollSpeed;
-      }
-      break;
-    case SCROLLING_UP:
-      if(scrollData.yOffset <= 0) {
-        scrollData.state = WAITING;
-      }
-      else {
-        scrollData.yOffset -= scrollData.scrollSpeed;
-      }
-      break;
-  }
+  updateScrollData(scrollModeData);
 
   if (blueBtn.pressed) {
     currentMode = GAME;
@@ -120,7 +159,7 @@ void showScores() {
 
 void editScores() {
   char scoreBuffer[15];
-  
+
   editModeData.blinkTimer++;
   if (editModeData.blinkTimer > editModeData.blinkDuration) {
     editModeData.blinkTimer = 0;
@@ -164,12 +203,19 @@ void editScores() {
 // Poll all the daughter boards
 void checkBuzzers() {
   if (whiteBtn.pressed) {
-    gameModeData.state = PLAYER_BUZZED;
     gameModeData.activePlayer = random(0, NUM_PLAYERS);
+    if (!gameModeData.lockedPlayers[gameModeData.activePlayer]) {
+      gameModeData.lockedPlayers[gameModeData.activePlayer] = true;
+      gameModeData.state = PLAYER_BUZZED;
+    }
+
+    Serial.printf("p%d has buzzed in.\n", gameModeData.activePlayer);
   }
 }
 
 void game() {
+  size_t const lockedPlayersSize = NUM_PLAYERS * 4;
+  char lockedPlayers[lockedPlayersSize];
   drawString(63, 0, "GAME MODE", MONOOLED_WHITE, MONOOLED_BLACK, 1);
 
   switch (gameModeData.state)
@@ -200,6 +246,22 @@ void game() {
     drawString(0, CHAR_HEIGHT*3, "Waiting", MONOOLED_WHITE, MONOOLED_BLACK, 1);
     drawString(0, CHAR_HEIGHT*4, "for buzz in.", MONOOLED_WHITE, MONOOLED_BLACK, 1);
 
+    char playerBuffer[3];
+    for (uint8_t i = 0; i < NUM_PLAYERS; i++) {
+      // If this player is locked out then
+      // add them to the string
+      if (gameModeData.lockedPlayers[i]) {
+        sprintf(playerBuffer, "p%d ", i);
+        strcat(lockedPlayers, playerBuffer);
+      }
+    }
+    // Cut off the final space
+    lockedPlayers[strnlen(lockedPlayers, lockedPlayersSize) - 1] = 0;
+    drawString(0, CHAR_HEIGHT*6, "Locked buzzers:", MONOOLED_WHITE, MONOOLED_BLACK, 1);
+    drawString(gameModeData.lockedPlayersScrollData.offset, CHAR_HEIGHT*7, lockedPlayers, MONOOLED_WHITE, MONOOLED_BLACK, 1);
+    gameModeData.lockedPlayersScrollData.scrollMax = strnlen(lockedPlayers, lockedPlayersSize) * CHAR_WIDTH - SCREEN_WIDTH;
+
+    updateScrollData(gameModeData.lockedPlayersScrollData);
     checkBuzzers();
 
     if (blueBtn.pressed) {
@@ -207,9 +269,10 @@ void game() {
     }
     if (redBtn.pressed) {
       gameModeData.state = BUZZERS_LOCKED;
+      unlockAllBuzzers();
     }
     break;
-  
+
   case PLAYER_BUZZED:
     char buffer[5];
     sprintf(buffer, "p%d", gameModeData.activePlayer);
@@ -218,10 +281,14 @@ void game() {
     drawString(0, 0, buffer, MONOOLED_WHITE, MONOOLED_BLACK, 1);
     drawString(0, CHAR_HEIGHT, "buzzed in", MONOOLED_WHITE, MONOOLED_BLACK, 1);
 
+    // Answered correctly
     if (greenBtn.pressed) {
       scores[gameModeData.activePlayer]++;
       gameModeData.state = BUZZERS_LOCKED;
+      unlockAllBuzzers();
     }
+
+    // Answered incorrectly
     if (redBtn.pressed) {
       gameModeData.state = BUZZERS_UNLOCKED;
     }
@@ -246,7 +313,19 @@ void updateButtons() {
   }
 }
 
+void unlockAllBuzzers() {
+  for (uint8_t i = 0; i < NUM_PLAYERS; i++) {
+    gameModeData.lockedPlayers[i] = false;
+  }
+}
+
 void setup() {
+
+  Serial.begin(9600);
+  while (!Serial) {
+    ; // wait for serial port to connect. Needed for native USB
+  }
+
   display.begin(i2c_Address, true); // Address 0x3C default
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
@@ -259,12 +338,15 @@ void setup() {
   greenBtn.pin = 18;
   blueBtn.pin = 32;
   redBtn.pin = 23;
-  
+
+  gameModeData.lockedPlayersScrollData.inverted = true;
+  // Initialize lockedPlayers
+  unlockAllBuzzers();
 }
 
 void loop() {
   updateButtons();
-  
+
   display.clearDisplay();
 
   switch (currentMode)
